@@ -46,6 +46,10 @@ export default function HandGestureKeyboard() {
   const [showLandmarks, setShowLandmarks] = useState(true)
   const [librariesLoaded, setLibrariesLoaded] = useState(false)
   const [isLoadingLibraries, setIsLoadingLibraries] = useState(false)
+  const [inputMode, setInputMode] = useState<"NORMAL" | "TELEX" | "VNI">("NORMAL")
+  const [currentWord, setCurrentWord] = useState("")
+  const [lastChar, setLastChar] = useState<{char: string, count: number} | null>(null)
+  const [noRepeatedChars, setNoRepeatedChars] = useState(true) // Chế độ loại bỏ ký tự trùng lặp liên tiếp
 
   // Check for camera devices
   const checkCameraAvailability = async () => {
@@ -651,16 +655,90 @@ export default function HandGestureKeyboard() {
     setTimeout(() => {
       if (key === "SPACE") {
         setText((prev) => prev + " ");
+        // Reset trạng thái từ mới
+        setCurrentWord("");
+        setLastChar(null);
       } else if (key === "BACKSPACE") {
-        setText((prev) => prev.slice(0, -1));
+        setText((prev) => {
+          const newText = prev.slice(0, -1);
+          
+          // Cập nhật currentWord khi xóa
+          const lastSpaceIndex = newText.lastIndexOf(" ");
+          const newWord = lastSpaceIndex === -1 ? newText : newText.slice(lastSpaceIndex + 1);
+          setCurrentWord(newWord);
+          
+          // Cập nhật ký tự cuối cùng
+          if (newWord.length > 0) {
+            const lastCh = newWord[newWord.length - 1];
+            // Kiểm tra xem ký tự cuối cùng có lặp lại không
+            if (newWord.length > 1 && newWord[newWord.length - 2] === lastCh) {
+              let count = 1;
+              for (let i = newWord.length - 1; i >= 0; i--) {
+                if (newWord[i] === lastCh) {
+                  count++;
+                } else {
+                  break;
+                }
+              }
+              setLastChar({ char: lastCh, count });
+            } else {
+              setLastChar({ char: lastCh, count: 1 });
+            }
+          } else {
+            setLastChar(null);
+          }
+          
+          return newText;
+        });
       } else {
-        setText((prev) => prev + key.toLowerCase());
+        // Chuyển đổi key thành ký tự cần thêm
+        const charToAdd = key.toLowerCase();
+        
+        // Kiểm tra xem có nên loại bỏ ký tự trùng lặp liên tiếp không
+        let shouldAddChar = true;
+        
+        if (noRepeatedChars && lastChar && lastChar.char === charToAdd) {
+          shouldAddChar = false; // Không thêm ký tự lặp lại liên tiếp
+        }
+        
+        if (shouldAddChar) {
+          // Xử lý kiểu gõ tiếng Việt nếu cần
+          const processedText = processVietnameseInput(currentWord, charToAdd);
+          
+          // Cập nhật text và currentWord
+          if (processedText.replaced) {
+            // Nếu có thay thế (vd: "a" + "a" -> "â")
+            setText((prev) => {
+              const lastWordStart = prev.lastIndexOf(" ") + 1;
+              return prev.substring(0, lastWordStart) + processedText.result;
+            });
+          } else {
+            // Nếu chỉ thêm ký tự bình thường
+            setText((prev) => prev + charToAdd);
+          }
+          
+          // Cập nhật từ hiện tại
+          setCurrentWord(processedText.result);
+          
+          // Cập nhật ký tự cuối cùng
+          if (processedText.replaced) {
+            // Nếu đã thay thế, cập nhật ký tự cuối mới
+            const lastCh = processedText.result[processedText.result.length - 1];
+            setLastChar({ char: lastCh, count: 1 }); 
+          } else {
+            // Nếu là ký tự mới
+            setLastChar({ char: charToAdd, count: 1 });
+          }
+        } else {
+          console.log(`Blocking repeated character: ${charToAdd}`);
+          // Có thể thêm phản hồi cho người dùng biết ký tự đã bị chặn
+        }
       }
 
       setSelectedKey(null);
       setIsProcessing(false);
     }, 200);
-  }
+  };
 
   // Phát âm thanh khi gõ phím
   const playKeySound = () => {
@@ -680,6 +758,271 @@ export default function HandGestureKeyboard() {
     oscillator.stop(audioContext.currentTime + 0.1)
   }
 
+  // Toggle chế độ loại bỏ ký tự lặp lại
+  const toggleNoRepeatedChars = () => {
+    setNoRepeatedChars(prev => !prev);
+  };
+  
+  // Xử lý gõ tiếng Việt
+  const processVietnameseInput = (word: string, newChar: string): { result: string, replaced: boolean } => {
+    if (inputMode === "NORMAL") {
+      return { result: word + newChar, replaced: false };
+    }
+    
+    // Nếu từ trống, chỉ cần thêm ký tự mới
+    if (!word) {
+      return { result: newChar, replaced: false };
+    }
+    
+    // Xử lý Telex
+    if (inputMode === "TELEX") {
+      const vowels = "aeiouy";
+      const lastCh = word[word.length - 1].toLowerCase();
+      
+      // Xử lý dấu thanh
+      if (newChar === "s") { // dấu sắc
+        if (vowels.includes(lastCh)) {
+          const accentMap: {[key: string]: string} = {
+            "a": "á", "e": "é", "i": "í", "o": "ó", "u": "ú", "y": "ý"
+          };
+          if (accentMap[lastCh]) {
+            return {
+              result: word.slice(0, -1) + accentMap[lastCh],
+              replaced: true
+            };
+          }
+        }
+      }
+      else if (newChar === "f") { // dấu huyền
+        if (vowels.includes(lastCh)) {
+          const accentMap: {[key: string]: string} = {
+            "a": "à", "e": "è", "i": "ì", "o": "ò", "u": "ù", "y": "ỳ"
+          };
+          if (accentMap[lastCh]) {
+            return {
+              result: word.slice(0, -1) + accentMap[lastCh],
+              replaced: true
+            };
+          }
+        }
+      }
+      else if (newChar === "r") { // dấu hỏi
+        if (vowels.includes(lastCh)) {
+          const accentMap: {[key: string]: string} = {
+            "a": "ả", "e": "ẻ", "i": "ỉ", "o": "ỏ", "u": "ủ", "y": "ỷ"
+          };
+          if (accentMap[lastCh]) {
+            return {
+              result: word.slice(0, -1) + accentMap[lastCh],
+              replaced: true
+            };
+          }
+        }
+      }
+      else if (newChar === "x") { // dấu ngã
+        if (vowels.includes(lastCh)) {
+          const accentMap: {[key: string]: string} = {
+            "a": "ã", "e": "ẽ", "i": "ĩ", "o": "õ", "u": "ũ", "y": "ỹ"
+          };
+          if (accentMap[lastCh]) {
+            return {
+              result: word.slice(0, -1) + accentMap[lastCh],
+              replaced: true
+            };
+          }
+        }
+      }
+      else if (newChar === "j") { // dấu nặng
+        if (vowels.includes(lastCh)) {
+          const accentMap: {[key: string]: string} = {
+            "a": "ạ", "e": "ẹ", "i": "ị", "o": "ọ", "u": "ụ", "y": "ỵ"
+          };
+          if (accentMap[lastCh]) {
+            return {
+              result: word.slice(0, -1) + accentMap[lastCh],
+              replaced: true
+            };
+          }
+        }
+      }
+      
+      // Xử lý chữ ă, â, ê, ô, ơ, ư, đ
+      if (lastCh === "a" && newChar === "a") {
+        return {
+          result: word.slice(0, -1) + "â",
+          replaced: true
+        };
+      }
+      else if (lastCh === "a" && newChar === "w") {
+        return {
+          result: word.slice(0, -1) + "ă",
+          replaced: true
+        };
+      }
+      else if (lastCh === "e" && newChar === "e") {
+        return {
+          result: word.slice(0, -1) + "ê",
+          replaced: true
+        };
+      }
+      else if (lastCh === "o" && newChar === "o") {
+        return {
+          result: word.slice(0, -1) + "ô",
+          replaced: true
+        };
+      }
+      else if (lastCh === "o" && newChar === "w") {
+        return {
+          result: word.slice(0, -1) + "ơ",
+          replaced: true
+        };
+      }
+      else if (lastCh === "u" && newChar === "w") {
+        return {
+          result: word.slice(0, -1) + "ư",
+          replaced: true
+        };
+      }
+      else if (lastCh === "d" && newChar === "d") {
+        return {
+          result: word.slice(0, -1) + "đ",
+          replaced: true
+        };
+      }
+    }
+    // Xử lý VNI
+    else if (inputMode === "VNI") {
+      const vowels = "aeiouy";
+      const lastCh = word[word.length - 1].toLowerCase();
+      
+      // Xử lý dấu thanh
+      if (newChar === "1") { // dấu sắc
+        if (vowels.includes(lastCh)) {
+          const accentMap: {[key: string]: string} = {
+            "a": "á", "e": "é", "i": "í", "o": "ó", "u": "ú", "y": "ý"
+          };
+          if (accentMap[lastCh]) {
+            return {
+              result: word.slice(0, -1) + accentMap[lastCh],
+              replaced: true
+            };
+          }
+        }
+      }
+      else if (newChar === "2") { // dấu huyền
+        if (vowels.includes(lastCh)) {
+          const accentMap: {[key: string]: string} = {
+            "a": "à", "e": "è", "i": "ì", "o": "ò", "u": "ù", "y": "ỳ"
+          };
+          if (accentMap[lastCh]) {
+            return {
+              result: word.slice(0, -1) + accentMap[lastCh],
+              replaced: true
+            };
+          }
+        }
+      }
+      else if (newChar === "3") { // dấu hỏi
+        if (vowels.includes(lastCh)) {
+          const accentMap: {[key: string]: string} = {
+            "a": "ả", "e": "ẻ", "i": "ỉ", "o": "ỏ", "u": "ủ", "y": "ỷ"
+          };
+          if (accentMap[lastCh]) {
+            return {
+              result: word.slice(0, -1) + accentMap[lastCh],
+              replaced: true
+            };
+          }
+        }
+      }
+      else if (newChar === "4") { // dấu ngã
+        if (vowels.includes(lastCh)) {
+          const accentMap: {[key: string]: string} = {
+            "a": "ã", "e": "ẽ", "i": "ĩ", "o": "õ", "u": "ũ", "y": "ỹ"
+          };
+          if (accentMap[lastCh]) {
+            return {
+              result: word.slice(0, -1) + accentMap[lastCh],
+              replaced: true
+            };
+          }
+        }
+      }
+      else if (newChar === "5") { // dấu nặng
+        if (vowels.includes(lastCh)) {
+          const accentMap: {[key: string]: string} = {
+            "a": "ạ", "e": "ẹ", "i": "ị", "o": "ọ", "u": "ụ", "y": "ỵ"
+          };
+          if (accentMap[lastCh]) {
+            return {
+              result: word.slice(0, -1) + accentMap[lastCh],
+              replaced: true
+            };
+          }
+        }
+      }
+      
+      // Xử lý chữ ă, â, ê, ô, ơ, ư, đ
+      if (lastCh === "a" && newChar === "6") {
+        return {
+          result: word.slice(0, -1) + "â",
+          replaced: true
+        };
+      }
+      else if (lastCh === "a" && newChar === "8") {
+        return {
+          result: word.slice(0, -1) + "ă",
+          replaced: true
+        };
+      }
+      else if (lastCh === "e" && newChar === "6") {
+        return {
+          result: word.slice(0, -1) + "ê",
+          replaced: true
+        };
+      }
+      else if (lastCh === "o" && newChar === "6") {
+        return {
+          result: word.slice(0, -1) + "ô",
+          replaced: true
+        };
+      }
+      else if (lastCh === "o" && newChar === "7") {
+        return {
+          result: word.slice(0, -1) + "ơ",
+          replaced: true
+        };
+      }
+      else if (lastCh === "u" && newChar === "7") {
+        return {
+          result: word.slice(0, -1) + "ư",
+          replaced: true
+        };
+      }
+      else if (lastCh === "d" && newChar === "9") {
+        return {
+          result: word.slice(0, -1) + "đ",
+          replaced: true
+        };
+      }
+    }
+    
+    // Nếu không có quy tắc đặc biệt, thêm ký tự bình thường
+    return { result: word + newChar, replaced: false };
+  };
+
+  // Toggle kiểu gõ tiếng Việt
+  const toggleInputMode = () => {
+    setInputMode(prevMode => {
+      switch (prevMode) {
+        case "NORMAL": return "TELEX";
+        case "TELEX": return "VNI";
+        case "VNI": return "NORMAL";
+        default: return "NORMAL";
+      }
+    });
+  };
+
   // Check camera availability on component mount
   useEffect(() => {
     checkCameraAvailability();
@@ -692,6 +1035,49 @@ export default function HandGestureKeyboard() {
     }
   }, []);
   
+  const cleanRepeatedChars = (text: string) => {
+    if (!text) return "";
+    
+    // Xử lý các ký tự lặp lại liên tiếp
+    let result = text[0]; // Bắt đầu với ký tự đầu tiên
+    let currentChar = text[0];
+    
+    for (let i = 1; i < text.length; i++) {
+      // Nếu ký tự hiện tại khác ký tự trước đó, thêm vào kết quả
+      if (text[i] !== currentChar) {
+        result += text[i];
+        currentChar = text[i];
+      }
+      // Nếu giống nhau, bỏ qua không thêm vào
+    }
+    
+    return result;
+  };
+
+  // Xử lý văn bản đầu vào để loại bỏ các ký tự lặp lại
+  const handleTextClean = () => {
+    // Tách văn bản thành các từ
+    const words = text.split(" ");
+    
+    // Xử lý từng từ để loại bỏ ký tự lặp lại
+    const cleanedWords = words.map(word => cleanRepeatedChars(word));
+    
+    // Ghép lại và cập nhật
+    const cleanedText = cleanedWords.join(" ");
+    setText(cleanedText);
+    
+    // Cập nhật từ hiện tại
+    const lastSpaceIndex = cleanedText.lastIndexOf(" ");
+    const newWord = lastSpaceIndex === -1 ? cleanedText : cleanedText.slice(lastSpaceIndex + 1);
+    setCurrentWord(newWord);
+    
+    if (newWord) {
+      setLastChar({ char: newWord[newWord.length - 1], count: 1 });
+    } else {
+      setLastChar(null);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
       <div className="max-w-7xl mx-auto space-y-6">
@@ -781,6 +1167,27 @@ export default function HandGestureKeyboard() {
                   {showLandmarks ? "Ẩn Điểm Tay" : "Hiện Điểm Tay"}
                 </Button>
                 
+                <Button
+                  onClick={toggleInputMode}
+                  variant="outline"
+                >
+                  Kiểu gõ: {inputMode}
+                </Button>
+                
+                <Button
+                  onClick={toggleNoRepeatedChars}
+                  variant={noRepeatedChars ? "secondary" : "outline"}
+                >
+                  {noRepeatedChars ? "Bỏ ký tự lặp lại" : "Cho phép lặp lại ký tự"}
+                </Button>
+
+                <Button 
+                  onClick={handleTextClean} 
+                  variant="outline"
+                >
+                  Xử lý văn bản hiện tại
+                </Button>
+                
                 {isStreaming && (
                   <Button
                     onClick={toggleVideoMode}
@@ -828,7 +1235,8 @@ export default function HandGestureKeyboard() {
                   <li>• Đưa tay vào vùng nhìn của camera</li>
                   <li>• Di chuyển <strong>ngón cái</strong> đến phím muốn chọn</li>
                   <li>• Giơ cả 5 ngón tay (hi-five) để "nhấn" phím</li>
-                  <li>• Văn bản sẽ xuất hiện bên dưới</li>
+                  <li>• Các ký tự lặp lại liên tiếp sẽ được tự động loại bỏ</li>
+                  <li>• Nhấn Space để bắt đầu từ mới</li>
                 </ul>
               </div>
             </CardContent>
@@ -837,21 +1245,45 @@ export default function HandGestureKeyboard() {
           {/* Text Output */}
           <Card className="lg:col-span-4">
             <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Volume2 className="w-5 h-5" />
-                Kết Quả Gõ Phím
+              <CardTitle className="flex items-center gap-2 justify-between">
+                <div className="flex items-center gap-2">
+                  <Volume2 className="w-5 h-5" />
+                  Kết Quả Gõ Phím
+                </div>
+                <div className="text-sm font-normal bg-blue-100 text-blue-700 px-2 py-1 rounded">
+                  {inputMode === "NORMAL" ? "Tiếng Anh" : 
+                   inputMode === "TELEX" ? "Tiếng Việt (TELEX)" : 
+                   "Tiếng Việt (VNI)"}
+                </div>
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
               <Textarea
                 value={text}
-                onChange={(e) => setText(e.target.value)}
+                onChange={(e) => {
+                  setText(e.target.value);
+                  // Cập nhật currentWord khi thay đổi text trực tiếp
+                  const lastSpaceIndex = e.target.value.lastIndexOf(" ");
+                  const word = lastSpaceIndex === -1 ? e.target.value : e.target.value.slice(lastSpaceIndex + 1);
+                  setCurrentWord(word);
+                  
+                  // Cập nhật ký tự cuối cùng
+                  if (word.length > 0) {
+                    setLastChar({ char: word[word.length - 1], count: 1 });
+                  } else {
+                    setLastChar(null);
+                  }
+                }}
                 placeholder="Văn bản sẽ xuất hiện ở đây khi bạn gõ phím bằng cử chỉ tay..."
                 className="min-h-[200px] text-lg"
               />
 
               <div className="flex gap-2">
-                <Button onClick={() => setText("")} variant="outline" className="flex items-center gap-2">
+                <Button onClick={() => {
+                  setText("");
+                  setCurrentWord("");
+                  setLastChar(null);
+                }} variant="outline" className="flex items-center gap-2">
                   <RotateCcw className="w-4 h-4" />
                   Xóa Tất Cả
                 </Button>
@@ -859,6 +1291,23 @@ export default function HandGestureKeyboard() {
                 <Button onClick={() => navigator.clipboard.writeText(text)} variant="outline" disabled={!text}>
                   Sao Chép
                 </Button>
+              </div>
+
+              {/* Thông tin về kiểu gõ */}
+              <div className="bg-gray-50 p-3 rounded-lg">
+                <h4 className="font-semibold text-gray-700 mb-2">Kiểu gõ: {inputMode}</h4>
+                {inputMode === "TELEX" && (
+                  <div className="text-xs text-gray-600 space-y-1">
+                    <p>• Dấu: <span className="font-semibold">s</span> (sắc), <span className="font-semibold">f</span> (huyền), <span className="font-semibold">r</span> (hỏi), <span className="font-semibold">x</span> (ngã), <span className="font-semibold">j</span> (nặng)</p>
+                    <p>• aa → â, aw → ă, ee → ê, oo → ô, ow → ơ, uw → ư, dd → đ</p>
+                  </div>
+                )}
+                {inputMode === "VNI" && (
+                  <div className="text-xs text-gray-600 space-y-1">
+                    <p>• Dấu: <span className="font-semibold">1</span> (sắc), <span className="font-semibold">2</span> (huyền), <span className="font-semibold">3</span> (hỏi), <span className="font-semibold">4</span> (ngã), <span className="font-semibold">5</span> (nặng)</p>
+                    <p>• a6 → â, a8 → ă, e6 → ê, o6 → ô, o7 → ơ, u7 → ư, d9 → đ</p>
+                  </div>
+                )}
               </div>
 
               {/* Thống kê */}
@@ -871,6 +1320,18 @@ export default function HandGestureKeyboard() {
                   <div>
                     <span className="text-gray-600">Số từ:</span>
                     <span className="ml-2 font-semibold">{text.trim() ? text.trim().split(/\s+/).length : 0}</span>
+                  </div>
+                  <div className="col-span-2">
+                    <span className="text-gray-600">Từ hiện tại:</span>
+                    <span className="ml-2 font-medium">{currentWord}</span>
+                    {lastChar && noRepeatedChars && (
+                      <div className="mt-1">
+                        <span className="text-xs text-gray-500">Ký tự cuối: </span>
+                        <span className="text-xs font-medium text-orange-500">
+                          {lastChar.char}
+                        </span>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
